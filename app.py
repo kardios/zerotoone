@@ -28,7 +28,9 @@ client = anthropic.Anthropic(api_key=api_key)
 st.title("Zero-to-One Insight Extractor (Claude Opus 4.1) - PDF Only")
 
 uploaded_file = st.file_uploader("Upload a PDF file", type=["pdf"])
-max_words = st.number_input("Maximum words to process (approx.)", min_value=1000, max_value=200000, value=50000, step=1000)
+
+# Internal maximum word cap
+MAX_WORDS = 80000
 
 if uploaded_file and st.button("Analyze PDF"):
 
@@ -38,11 +40,11 @@ if uploaded_file and st.button("Analyze PDF"):
     doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
     full_text = "".join([page.get_text("text") + "\n" for page in doc])
 
-    # Optional truncation if document is very long
+    # --- Internal truncation if document is too long ---
     words = full_text.split()
-    if len(words) > max_words:
-        st.warning(f"Document truncated to first {max_words} words to fit context window.")
-        words = words[:max_words]
+    if len(words) > MAX_WORDS:
+        st.warning(f"Document is very large. Truncating to first {MAX_WORDS} words.")
+        words = words[:MAX_WORDS]
     full_text = " ".join(words)
 
     st.success("Text extraction complete.")
@@ -68,7 +70,7 @@ if uploaded_file and st.button("Analyze PDF"):
         max_tokens=3000,
         messages=[{"role": "user", "content": prompt_pass1}]
     )
-    initial_output = response_pass1["content"]
+    initial_output = response_pass1.content  # <-- corrected
 
     # --- Pass 2: Meta-refinement ---
     st.info("Running meta-refinement to sharpen insights...")
@@ -90,7 +92,7 @@ if uploaded_file and st.button("Analyze PDF"):
         max_tokens=3000,
         messages=[{"role": "user", "content": prompt_pass2}]
     )
-    final_output = response_pass2["content"]
+    final_output = response_pass2.content  # <-- corrected
 
     # --- Display single output ---
     st.subheader("Refined Zero-to-One Insights")
