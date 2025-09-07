@@ -1,108 +1,105 @@
+import os
 import streamlit as st
 import fitz  # PyMuPDF
 import anthropic
 
-# Initialize Claude client
-client = anthropic.Anthropic(api_key="YOUR_API_KEY")
+# ------------------------------------------------------------------
+# Secrets helper
+# ------------------------------------------------------------------
+def _get_secret(name: str):
+    """Retrieve a secret from env first, then Streamlit secrets."""
+    v = os.environ.get(name)
+    if not v:
+        try:
+            v = st.secrets.get(name)
+        except Exception:
+            v = None
+    return v
 
+# Initialize Claude client
+api_key = _get_secret("ANTHROPIC_API_KEY")
+if not api_key:
+    st.error("Claude API key not found. Please set ANTHROPIC_API_KEY in env or Streamlit secrets.")
+    st.stop()
+
+client = anthropic.Anthropic(api_key=api_key)
+
+# --- Streamlit UI ---
 st.title("Zero-to-One Insight Extractor (Claude Opus 4.1) - PDF Only")
 
 uploaded_file = st.file_uploader("Upload a PDF file", type=["pdf"])
-chunk_size = st.number_input("Chunk size (words)", min_value=200, max_value=2000, value=1200, step=100)
+max_words = st.number_input("Maximum words to process (approx.)", min_value=1000, max_value=200000, value=50000, step=1000)
 
 if uploaded_file and st.button("Analyze PDF"):
 
     st.info("Extracting text from PDF...")
 
-    # --- Extract text ---
+    # --- PDF extraction ---
     doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
     full_text = "".join([page.get_text("text") + "\n" for page in doc])
+
+    # Optional truncation if document is very long
+    words = full_text.split()
+    if len(words) > max_words:
+        st.warning(f"Document truncated to first {max_words} words to fit context window.")
+        words = words[:max_words]
+    full_text = " ".join(words)
+
     st.success("Text extraction complete.")
 
-    # --- Chunk the text ---
-    words = full_text.split()
-    chunks = [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
+    # --- Pass 1: Initial extraction ---
+    st.info("Running initial analysis...")
 
-    section_summaries = []
-    chunk_insights_list = []
+    prompt_pass1 = f"""
+    You are a contrarian thinker trained in Peter Thiel's Zero to One framework.
+    Analyze the following document:
 
-    # --- Process each chunk ---
-    for idx, chunk in enumerate(chunks):
-        st.write(f"Processing chunk {idx+1}/{len(chunks)}...")
+    1. Summarize the main points in 3–5 sentences.
+    2. Extract 5–10 counter-intuitive insights (true, but most people would disagree). 
+       For each insight, explain why it is counter-intuitive and why it might be true.
+    3. Suggest 3–5 high-leverage Zero-to-One hypotheses implied by the document.
 
-        # --- Summary ---
-        prompt_summary = f"""
-        You are a contrarian thinker trained in Peter Thiel's Zero to One framework.
-        Summarize the following text chunk in 2-3 sentences.
-
-        Text chunk:
-        {chunk}
-        """
-        response_summary = client.messages.create(
-            model="claude-opus-4-1-20250805",
-            max_tokens=500,
-            messages=[{"role": "user", "content": prompt_summary}]
-        )
-        summary = response_summary["content"]
-        section_summaries.append(f"Chunk {idx+1} Summary:\n{summary}\n")
-
-        # --- Chunk-level insights ---
-        prompt_insights = f"""
-        Analyze the following text chunk and extract 2-5 counter-intuitive insights:
-        - Explain why each is counter-intuitive.
-        - Explain why it might be true.
-        - Optionally, suggest 1-2 Zero-to-One hypotheses.
-
-        Text chunk:
-        {chunk}
-        """
-        response_insights = client.messages.create(
-            model="claude-opus-4-1-20250805",
-            max_tokens=2000,
-            messages=[{"role": "user", "content": prompt_insights}]
-        )
-        chunk_insights = response_insights["content"]
-        chunk_insights_list.append(f"Chunk {idx+1} Insights:\n{chunk_insights}\n")
-
-    # --- Global Synthesis ---
-    global_prompt = f"""
-    You have the following chunk-level insights:
-
-    {'\n\n'.join(chunk_insights_list)}
-
-    1. Combine these insights and identify any high-leverage contrarian ideas that challenge broad assumptions.
-    2. Rank all insights and hypotheses by contrarian impact and plausibility.
-    3. Produce a final, refined, ranked list of Zero-to-One insights and hypotheses.
+    Document text:
+    {full_text}
     """
-    global_response = client.messages.create(
+
+    response_pass1 = client.messages.create(
         model="claude-opus-4-1-20250805",
         max_tokens=3000,
-        messages=[{"role": "user", "content": global_prompt}]
+        messages=[{"role": "user", "content": prompt_pass1}]
     )
-    global_insights = global_response["content"]
+    initial_output = response_pass1["content"]
 
-    # --- Tabs ---
-    tab1, tab2, tab3 = st.tabs(["Section Summaries", "Chunk-Level Insights", "Global Synthesis"])
+    # --- Pass 2: Meta-refinement ---
+    st.info("Running meta-refinement to sharpen insights...")
 
-    with tab1:
-        st.subheader("Section Summaries")
-        for summary in section_summaries:
-            st.text_area("", summary, height=120)
+    prompt_pass2 = f"""
+    You have the following initial analysis of a document:
 
-    with tab2:
-        st.subheader("Chunk-Level Counter-Intuitive Insights")
-        for chunk_text in chunk_insights_list:
-            st.text_area("", chunk_text, height=300)
+    {initial_output}
 
-    with tab3:
-        st.subheader("Global Synthesis & Ranked Zero-to-One Insights")
-        st.text_area("", global_insights, height=600)
+    Please refine and rank all counter-intuitive insights and Zero-to-One hypotheses:
+    - Make insights sharper and more actionable.
+    - Rank by contrarian impact and plausibility.
+    - Maintain the summary for context at the top.
+    - Produce the final output in a clear structured format.
+    """
 
-    # --- Download ---
-    full_output = "\n\n".join(section_summaries + chunk_insights_list + [f"Global Synthesis:\n{global_insights}"])
+    response_pass2 = client.messages.create(
+        model="claude-opus-4-1-20250805",
+        max_tokens=3000,
+        messages=[{"role": "user", "content": prompt_pass2}]
+    )
+    final_output = response_pass2["content"]
+
+    # --- Display single output ---
+    st.subheader("Refined Zero-to-One Insights")
+    st.text_area("", final_output, height=800)
+
+    # --- Download as TXT ---
     st.download_button(
-        label="Download as TXT",
-        data=full_output,
+        label="Download Results as TXT",
+        data=final_output,
         file_name="zero_to_one_insights.txt",
         mime="text/plain"
     )
