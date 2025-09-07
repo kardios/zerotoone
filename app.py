@@ -30,31 +30,19 @@ st.title("Zero-to-One Analysis")
 uploaded_file = st.file_uploader("Upload a PDF file", type=["pdf"])
 MAX_WORDS = 80000
 
+# Initialize session_state to store outputs
 if "outputs" not in st.session_state:
     st.session_state["outputs"] = {}
 if "final_text" not in st.session_state:
     st.session_state["final_text"] = ""
 
-# Max tokens per pass
+# Max tokens per pass configuration
 MAX_TOKENS_PER_PASS = {
     "summary": 6000,
     "insights": 5000,
     "hypotheses": 5000,
-    "refinement": 6000,
-    "self_critique": 3000,
-    "alt_perspective": 4000
+    "refinement": 6000
 }
-
-# Modular pass configuration
-PASS_SEQUENCE = [
-    ("Expanded Summary", True),
-    ("Counter-Intuitive Insights", True),
-    ("Zero-to-One Hypotheses", True),
-    ("Refinement & Ranking", True),
-    ("Final Synthesis", True),
-    ("Self-Critique", False),         # Optional
-    ("Alternative Perspective", False) # Optional
-]
 
 def run_claude_pass(prompt, step_name, step_num, max_tokens):
     """Run a Claude API call with spinner, progress bar, and timing."""
@@ -68,6 +56,7 @@ def run_claude_pass(prompt, step_name, step_num, max_tokens):
     with st.spinner(f"{step_name} in progress..."):
         progress_bar = st.progress(0)
         start_time = time.time()
+        # Simulate progress until API returns
         for i in range(1, 80):
             time.sleep(0.01)
             progress_bar.progress(i)
@@ -79,6 +68,7 @@ def run_claude_pass(prompt, step_name, step_num, max_tokens):
         progress_bar.progress(100)
         elapsed = time.time() - start_time
 
+    # Handle TextBlock output
     if isinstance(response.content, list):
         output_text = "\n\n".join([tb.text for tb in response.content])
     else:
@@ -89,8 +79,10 @@ def run_claude_pass(prompt, step_name, step_num, max_tokens):
 
 if uploaded_file and st.button("Analyze PDF"):
 
-    # Step 0: Extract text
+    # Step counter
     step = 0
+
+    # Step 1: Extract text
     step += 1
     step_placeholder = st.empty()
     step_placeholder.info(f"Step {step}: Extracting text from PDF...")
@@ -98,6 +90,7 @@ if uploaded_file and st.button("Analyze PDF"):
 
     doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
     full_text = "".join([page.get_text("text") + "\n" for page in doc])
+
     words = full_text.split()
     if len(words) > MAX_WORDS:
         st.warning(f"Document is very large. Truncating to first {MAX_WORDS} words.")
@@ -105,16 +98,9 @@ if uploaded_file and st.button("Analyze PDF"):
     full_text = " ".join(words)
     step_placeholder.success(f"Step {step}: Text extraction complete. ({len(words)} words)")
 
-    # --- Run modular passes ---
-    pass_results = {}
-    total_time = 0
-    for idx, (pass_name, enabled) in enumerate(PASS_SEQUENCE, start=1):
-        if not enabled:
-            continue
-        step = idx
-        # Construct prompt dynamically based on prior outputs
-        if pass_name == "Expanded Summary":
-            prompt = f"""
+    # --- Pass 1: Expanded Summary ---
+    step += 1
+    prompt_summary = f"""
 You are a contrarian thinker trained in Peter Thiel’s Zero-to-One framework.
 Summarize the main points of the following document in 2–3 paragraphs using structured headings:
 
@@ -122,105 +108,100 @@ Summarize the main points of the following document in 2–3 paragraphs using st
 - Key Assumptions
 - Notable Examples
 
-Highlight contradictions, non-obvious points, and implied strategic choices.
+Highlight any non-obvious points, contradictions, or hidden assumptions.
+This summary will serve as the foundation for extracting counter-intuitive insights and generating high-leverage hypotheses.
 
 Document text:
 {full_text}
 """
-            max_tokens = MAX_TOKENS_PER_PASS["summary"]
+    summary_text, pass1_time = run_claude_pass(prompt_summary, "Expanded Summary", step, MAX_TOKENS_PER_PASS["summary"])
+    st.session_state["outputs"]["summary"] = summary_text
 
-        elif pass_name == "Counter-Intuitive Insights":
-            prompt = f"""
+    with st.expander("Pass 1: Expanded Summary"):
+        st.markdown(summary_text)
+
+    # --- Pass 2: Counter-Intuitive Insights ---
+    step += 1
+    prompt_insights = f"""
+You are a contrarian thinker trained in Peter Thiel’s Zero-to-One framework.
 Based on the summary below, extract 5–10 counter-intuitive insights that are:
-- True or plausible
-- Contrary to common assumptions
-- Actionable if possible
+- True or strongly plausible
+- Contrary to common assumptions or conventional wisdom
+- Relevant for innovation or high-leverage opportunities
 
 For each insight, include:
-1. Statement
-2. Conventional assumption being challenged
-3. Reasoning from summary
-4. Contrarian impact (1–10)
-5. Plausibility (1–10)
-6. Optional actionable note
+1. A concise statement
+2. Explanation of why it is counter-intuitive
+3. Supporting reasoning from the summary
+4. Optional: actionable recommendation
+
+Rank insights by impact × plausibility.
 
 Summary:
-{pass_results.get('Expanded Summary','')}
+{summary_text}
 """
-            max_tokens = MAX_TOKENS_PER_PASS["insights"]
+    insights_text, pass2_time = run_claude_pass(prompt_insights, "Counter-Intuitive Insights", step, MAX_TOKENS_PER_PASS["insights"])
+    st.session_state["outputs"]["insights"] = insights_text
 
-        elif pass_name == "Zero-to-One Hypotheses":
-            prompt = f"""
-Based on the summary and insights below, generate 3–5 high-leverage Zero-to-One hypotheses.
+    with st.expander("Pass 2: Counter-Intuitive Insights"):
+        st.markdown(insights_text)
+
+    # --- Pass 3: Zero-to-One Hypotheses ---
+    step += 1
+    prompt_hypotheses = f"""
+You are a contrarian thinker trained in Peter Thiel’s Zero-to-One framework.
+Based on the summary and counter-intuitive insights below, generate 3–5 high-leverage Zero-to-One hypotheses.
 
 For each hypothesis, include:
-1. Statement
-2. Linked insights
-3. Strategic rationale
-4. Market potential
-5. Feasibility / technical considerations
-6. Risk assessment
-7. Actionable steps
+1. Concise statement
+2. How it connects to the insights and summary
+3. Estimated market potential or opportunity size
+4. Feasibility or technical/practical considerations
+5. Optional actionable steps or go-to-market ideas
 
 Summary:
-{pass_results.get('Expanded Summary','')}
+{summary_text}
 
-Insights:
-{pass_results.get('Counter-Intuitive Insights','')}
+Counter-Intuitive Insights:
+{insights_text}
 """
-            max_tokens = MAX_TOKENS_PER_PASS["hypotheses"]
+    hypotheses_text, pass3_time = run_claude_pass(prompt_hypotheses, "Zero-to-One Hypotheses", step, MAX_TOKENS_PER_PASS["hypotheses"])
+    st.session_state["outputs"]["hypotheses"] = hypotheses_text
 
-        elif pass_name == "Refinement & Ranking":
-            prompt = f"""
-Refine and rank insights and hypotheses for clarity, precision, and impact.
-Include normalized metrics for Contrarian Impact, Plausibility, Feasibility, Market Potential.
-Detect conflicts or overlaps and suggest merges/splits.
+    with st.expander("Pass 3: Zero-to-One Hypotheses"):
+        st.markdown(hypotheses_text)
+
+    # --- Pass 4: Refinement and Ranking ---
+    step += 1
+    prompt_refine = f"""
+You are a contrarian thinker trained in Peter Thiel’s Zero-to-One framework.
+Refine and rank all insights and hypotheses for clarity, precision, and impact.
+
+- For each insight: include statement, Contrarian Impact (1–10), Plausibility (1–10), actionable note
+- For each hypothesis: include statement, Market Potential, Feasibility, actionable steps
+- Rank all outputs by impact × plausibility × potential ROI
+- Ensure consistency with the summary
 
 Summary:
-{pass_results.get('Expanded Summary','')}
+{summary_text}
 
 Insights:
-{pass_results.get('Counter-Intuitive Insights','')}
+{insights_text}
 
 Hypotheses:
-{pass_results.get('Zero-to-One Hypotheses','')}
+{hypotheses_text}
 """
-            max_tokens = MAX_TOKENS_PER_PASS["refinement"]
+    refined_text, pass4_time = run_claude_pass(prompt_refine, "Refinement and Ranking", step, MAX_TOKENS_PER_PASS["refinement"])
+    st.session_state["outputs"]["refined"] = refined_text
 
-        elif pass_name == "Final Synthesis":
-            prompt = f"""
-Produce a final report combining summary, ranked insights, and hypotheses.
-Include a top 3 actionable insights/hypotheses and strategic recommendations.
-Format for readability in Markdown.
-"""
-            max_tokens = MAX_TOKENS_PER_PASS["refinement"]
+    with st.expander("Pass 4: Refined Insights & Hypotheses"):
+        st.markdown(refined_text)
 
-        elif pass_name == "Self-Critique":
-            prompt = f"""
-Review all previous outputs for inconsistencies, implausible claims, or conflicts.
-Suggest corrections or refinements while maintaining reasoning integrity.
-"""
-            max_tokens = MAX_TOKENS_PER_PASS["self_critique"]
-
-        elif pass_name == "Alternative Perspective":
-            prompt = f"""
-Re-evaluate insights and hypotheses from an alternative perspective (e.g., competitor, regulator, engineer).
-Highlight any overlooked opportunities or risks.
-"""
-            max_tokens = MAX_TOKENS_PER_PASS["alt_perspective"]
-
-        else:
-            continue
-
-        output_text, elapsed = run_claude_pass(prompt, pass_name, step, max_tokens)
-        pass_results[pass_name] = output_text
-        total_time += elapsed
-
-        with st.expander(f"Pass {step}: {pass_name}"):
-            st.markdown(output_text)
-
-    # Store final output
-    st.session_state["final_text"] = pass_results.get("Final Synthesis", "")
+    # --- Pass 5: Final Synthesis & Download ---
+    step += 1
+    st.session_state["final_text"] = refined_text
+    with st.expander("Pass 5: Final Synthesized Report"):
+        st.markdown(st.session_state["final_text"])
 
     st.download_button(
         label="Download Full Report as TXT",
@@ -229,4 +210,5 @@ Highlight any overlooked opportunities or risks.
         mime="text/plain"
     )
 
-    st.info(f"Total processing time (excluding download prep): {total_time:.1f}s")
+    total_time = pass1_time + pass2_time + pass3_time + pass4_time
+    st.info(f"Total processing time (excluding final download prep): {total_time:.1f}s")
