@@ -53,46 +53,59 @@ if uploaded_file and st.button("Analyze PDF"):
     st.info("Running initial analysis...")
 
     prompt_pass1 = f"""
-    You are a contrarian thinker trained in Peter Thiel's Zero to One framework.
-    Analyze the following document:
+You are a contrarian thinker trained in Peter Thiel's Zero to One framework.
+Analyze the following document:
 
-    1. Summarize the main points in 3–5 sentences.
-    2. Extract 5–10 counter-intuitive insights (true, but most people would disagree). 
-       For each insight, explain why it is counter-intuitive and why it might be true.
-    3. Suggest 3–5 high-leverage Zero-to-One hypotheses implied by the document.
+1. Summarize the main points in 3–5 sentences.
+2. Extract 5–10 counter-intuitive insights (true, but most people would disagree). 
+   For each insight, explain why it is counter-intuitive and why it might be true.
+3. Suggest 3–5 high-leverage Zero-to-One hypotheses implied by the document.
 
-    Document text:
-    {full_text}
-    """
+Document text:
+{full_text}
+"""
 
     response_pass1 = client.messages.create(
         model="claude-opus-4-1-20250805",
         max_tokens=3000,
         messages=[{"role": "user", "content": prompt_pass1}]
     )
-    initial_output = response_pass1.content  # <-- corrected
+
+    # --- Handle TextBlock output ---
+    initial_output = ""
+    if isinstance(response_pass1.content, list):
+        # Join all text blocks
+        initial_output = "\n\n".join([tb.text for tb in response_pass1.content])
+    else:
+        initial_output = str(response_pass1.content)
 
     # --- Pass 2: Meta-refinement ---
     st.info("Running meta-refinement to sharpen insights...")
 
     prompt_pass2 = f"""
-    You have the following initial analysis of a document:
+You have the following initial analysis of a document:
 
-    {initial_output}
+{initial_output}
 
-    Please refine and rank all counter-intuitive insights and Zero-to-One hypotheses:
-    - Make insights sharper and more actionable.
-    - Rank by contrarian impact and plausibility.
-    - Maintain the summary for context at the top.
-    - Produce the final output in a clear structured format.
-    """
+Please refine and rank all counter-intuitive insights and Zero-to-One hypotheses:
+- Make insights sharper and more actionable.
+- Rank by contrarian impact and plausibility.
+- Maintain the summary for context at the top.
+- Produce the final output in a clear structured format.
+"""
 
     response_pass2 = client.messages.create(
         model="claude-opus-4-1-20250805",
         max_tokens=3000,
         messages=[{"role": "user", "content": prompt_pass2}]
     )
-    final_output = response_pass2.content  # <-- corrected
+
+    # --- Handle TextBlock output for final output ---
+    final_output = ""
+    if isinstance(response_pass2.content, list):
+        final_output = "\n\n".join([tb.text for tb in response_pass2.content])
+    else:
+        final_output = str(response_pass2.content)
 
     # --- Display single output ---
     st.subheader("Refined Zero-to-One Insights")
