@@ -25,7 +25,7 @@ if not api_key:
 client = anthropic.Anthropic(api_key=api_key)
 
 # --- Streamlit UI ---
-st.title("Zero-to-One Insight Pipeline (Claude Opus 4.1) - PDF Only")
+st.title("Zero-to-One Analysis")
 
 uploaded_file = st.file_uploader("Upload a PDF file", type=["pdf"])
 MAX_WORDS = 80000
@@ -36,7 +36,15 @@ if "outputs" not in st.session_state:
 if "final_text" not in st.session_state:
     st.session_state["final_text"] = ""
 
-def run_claude_pass(prompt, step_name, step_num):
+# Max tokens per pass configuration
+MAX_TOKENS_PER_PASS = {
+    "summary": 6000,
+    "insights": 5000,
+    "hypotheses": 5000,
+    "refinement": 6000
+}
+
+def run_claude_pass(prompt, step_name, step_num, max_tokens):
     """Run a Claude API call with spinner, progress bar, and timing."""
     step_placeholder = st.session_state.get("step_placeholder", None)
     if step_placeholder is None:
@@ -54,7 +62,7 @@ def run_claude_pass(prompt, step_name, step_num):
             progress_bar.progress(i)
         response = client.messages.create(
             model="claude-opus-4-1-20250805",
-            max_tokens=3000,
+            max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}]
         )
         progress_bar.progress(100)
@@ -93,14 +101,20 @@ if uploaded_file and st.button("Analyze PDF"):
     # --- Pass 1: Expanded Summary ---
     step += 1
     prompt_summary = f"""
-Summarize the main points of the following document in 2–3 paragraphs.
-Include key arguments, assumptions, and notable examples.
-This summary will be used for subsequent analysis.
+You are a contrarian thinker trained in Peter Thiel’s Zero-to-One framework.
+Summarize the main points of the following document in 2–3 paragraphs using structured headings:
+
+- Key Arguments
+- Key Assumptions
+- Notable Examples
+
+Highlight any non-obvious points, contradictions, or hidden assumptions.
+This summary will serve as the foundation for extracting counter-intuitive insights and generating high-leverage hypotheses.
 
 Document text:
 {full_text}
 """
-    summary_text, pass1_time = run_claude_pass(prompt_summary, "Expanded Summary", step)
+    summary_text, pass1_time = run_claude_pass(prompt_summary, "Expanded Summary", step, MAX_TOKENS_PER_PASS["summary"])
     st.session_state["outputs"]["summary"] = summary_text
 
     with st.expander("Pass 1: Expanded Summary"):
@@ -109,14 +123,24 @@ Document text:
     # --- Pass 2: Counter-Intuitive Insights ---
     step += 1
     prompt_insights = f"""
-Based on the following summary, extract 5–10 counter-intuitive insights:
-- Each insight should be true but contrary to common assumptions.
-- Explain why each insight is counter-intuitive and why it might be true.
+You are a contrarian thinker trained in Peter Thiel’s Zero-to-One framework.
+Based on the summary below, extract 5–10 counter-intuitive insights that are:
+- True or strongly plausible
+- Contrary to common assumptions or conventional wisdom
+- Relevant for innovation or high-leverage opportunities
+
+For each insight, include:
+1. A concise statement
+2. Explanation of why it is counter-intuitive
+3. Supporting reasoning from the summary
+4. Optional: actionable recommendation
+
+Rank insights by impact × plausibility.
 
 Summary:
 {summary_text}
 """
-    insights_text, pass2_time = run_claude_pass(prompt_insights, "Counter-Intuitive Insights", step)
+    insights_text, pass2_time = run_claude_pass(prompt_insights, "Counter-Intuitive Insights", step, MAX_TOKENS_PER_PASS["insights"])
     st.session_state["outputs"]["insights"] = insights_text
 
     with st.expander("Pass 2: Counter-Intuitive Insights"):
@@ -125,17 +149,23 @@ Summary:
     # --- Pass 3: Zero-to-One Hypotheses ---
     step += 1
     prompt_hypotheses = f"""
-Based on the summary and counter-intuitive insights, generate 3–5 high-leverage Zero-to-One hypotheses:
-- Explain market potential and feasibility.
-- Include actionable concepts where possible.
+You are a contrarian thinker trained in Peter Thiel’s Zero-to-One framework.
+Based on the summary and counter-intuitive insights below, generate 3–5 high-leverage Zero-to-One hypotheses.
+
+For each hypothesis, include:
+1. Concise statement
+2. How it connects to the insights and summary
+3. Estimated market potential or opportunity size
+4. Feasibility or technical/practical considerations
+5. Optional actionable steps or go-to-market ideas
 
 Summary:
 {summary_text}
 
-Insights:
+Counter-Intuitive Insights:
 {insights_text}
 """
-    hypotheses_text, pass3_time = run_claude_pass(prompt_hypotheses, "Zero-to-One Hypotheses", step)
+    hypotheses_text, pass3_time = run_claude_pass(prompt_hypotheses, "Zero-to-One Hypotheses", step, MAX_TOKENS_PER_PASS["hypotheses"])
     st.session_state["outputs"]["hypotheses"] = hypotheses_text
 
     with st.expander("Pass 3: Zero-to-One Hypotheses"):
@@ -144,8 +174,13 @@ Insights:
     # --- Pass 4: Refinement and Ranking ---
     step += 1
     prompt_refine = f"""
-Refine and rank all insights and hypotheses for clarity, impact, and plausibility.
-Maintain the summary at the top, and produce a clean, structured output.
+You are a contrarian thinker trained in Peter Thiel’s Zero-to-One framework.
+Refine and rank all insights and hypotheses for clarity, precision, and impact.
+
+- For each insight: include statement, Contrarian Impact (1–10), Plausibility (1–10), actionable note
+- For each hypothesis: include statement, Market Potential, Feasibility, actionable steps
+- Rank all outputs by impact × plausibility × potential ROI
+- Ensure consistency with the summary
 
 Summary:
 {summary_text}
@@ -156,19 +191,18 @@ Insights:
 Hypotheses:
 {hypotheses_text}
 """
-    refined_text, pass4_time = run_claude_pass(prompt_refine, "Refinement and Ranking", step)
+    refined_text, pass4_time = run_claude_pass(prompt_refine, "Refinement and Ranking", step, MAX_TOKENS_PER_PASS["refinement"])
     st.session_state["outputs"]["refined"] = refined_text
 
     with st.expander("Pass 4: Refined Insights & Hypotheses"):
         st.markdown(refined_text)
 
-    # --- Pass 5: Final Synthesis ---
+    # --- Pass 5: Final Synthesis & Download ---
     step += 1
     st.session_state["final_text"] = refined_text
     with st.expander("Pass 5: Final Synthesized Report"):
         st.markdown(st.session_state["final_text"])
 
-    # Download button reads from session_state to avoid rerun
     st.download_button(
         label="Download Full Report as TXT",
         data=st.session_state["final_text"],
