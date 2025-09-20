@@ -1,18 +1,17 @@
-import os
+import streamlit as st
+import fitz  # PyMuPDF
 import json
 import time
-import streamlit as st
-import pandas as pd
-import fitz  # PyMuPDF
-from openai import OpenAI
+import os
+
+# Optional: APIs
 import anthropic
+from openai import OpenAI
 
 # ---------------------------
-# Helper functions
+# Secrets helper
 # ---------------------------
-
 def _get_secret(name: str):
-    """Safely retrieve a secret from environment or st.secrets"""
     v = os.environ.get(name)
     if not v:
         try:
@@ -21,246 +20,160 @@ def _get_secret(name: str):
             v = None
     return v
 
+# ---------------------------
+# PDF extraction
+# ---------------------------
 def extract_text_from_pdf(uploaded_file):
-    """Extract text from a PDF UploadedFile in Streamlit"""
+    """Extract text from a PDF UploadedFile"""
     text = ""
-    # Ensure we read from the start
     uploaded_file.seek(0)
     pdf_bytes = uploaded_file.read()
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
         for page in doc:
-            text += page.get_text()
+            # page.get_text("blocks") returns list of tuples, block[4] is text
+            blocks = page.get_text("blocks")
+            text += "\n".join(str(block[4]) for block in blocks) + "\n"
     return text
 
+# ---------------------------
+# JSON parsing helper
+# ---------------------------
 def parse_json_fallback(text):
-    """Try to parse JSON from text, return None if fails"""
     try:
         return json.loads(text)
-    except Exception:
-        return None
+    except json.JSONDecodeError:
+        return {"raw_text": text}
 
-def call_model(prompt, max_tokens, desc, model_choice):
-    """Call either Claude or GPT-5 depending on selection"""
-    start = time.time()
-    if model_choice == "Claude":
-        client = anthropic.Anthropic(api_key=_get_secret("ANTHROPIC_API_KEY"))
-        resp = client.messages.create(
-            model="claude-opus-4-1-20250805",
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        output = resp.content
-    else:  # GPT-5
+# ---------------------------
+# LLM call abstraction
+# ---------------------------
+def call_model(prompt, model="claude-opus-4-1", max_tokens=2048):
+    if model.startswith("gpt"):
         client = OpenAI(api_key=_get_secret("OPENAI_API_KEY"))
-        resp = client.responses.create(
-            model="gpt-5",
+        result = client.responses.create(
+            model=model,
             input=prompt,
-            reasoning={"effort":"medium"},
-            text={"verbosity":"medium"},
+            reasoning={"effort": "medium"},
+            text={"verbosity": "medium"}
         )
-        output = resp.output_text
-    elapsed = time.time() - start
-    return output, elapsed
-
-def adapt_tokens(stage):
-    """Return max tokens per stage"""
-    mapping = {
-        "summary": 2500,
-        "insights": 3500,
-        "per_insight": 1000,
-        "hypotheses": 2500
-    }
-    return mapping.get(stage, 1500)
+        return result.output_text
+    else:
+        client = anthropic.Anthropic(api_key=_get_secret("ANTHROPIC_API_KEY"))
+        response = client.messages.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens
+        )
+        return response.content
 
 # ---------------------------
 # Renderers
 # ---------------------------
-
-def render_summary(summary):
-    st.markdown("## Document Summary")
-    st.markdown(summary)
-
-def render_insights(insights):
-    st.markdown("## Candidate Insights")
-    for i, ins in enumerate(insights, 1):
-        st.markdown(f"**Insight {i}:** {ins.get('statement','')}")
-        rationale = ins.get("rationale") or ""
-        if rationale:
-            st.caption(f"Rationale: {rationale}")
-
-def render_deepened_insights(deepened):
-    st.markdown("## Deepened Insights")
-    for i, ins in enumerate(deepened, 1):
-        st.markdown(f"**Insight {i}:** {ins.get('statement','')}")
-        st.markdown(f"Expanded Rationale: {ins.get('expanded_rationale','')}")
-        st.markdown(f"Example Use Cases: {ins.get('example_use_cases','')}")
-        st.markdown(f"Potential Market: {ins.get('potential_market','')}")
-        st.markdown(f"Risks: {ins.get('risks','')}")
+def render_insights(insights, title="Insights"):
+    if not insights:
+        st.info("No insights available yet.")
+        return
+    st.subheader(title)
+    for insight in insights:
+        statement = insight.get("statement", "No statement")
+        impact = insight.get("contrarian_impact", "")
+        plaus = insight.get("plausibility", "")
+        actions = insight.get("action_steps", [])
+        with st.expander(f"{statement}"):
+            st.caption(f"Contrarian Impact: {impact}, Plausibility: {plaus}")
+            if actions:
+                st.markdown("**Action Steps:**")
+                for step in actions:
+                    st.markdown(f"- {step}")
 
 def render_hypotheses(hypotheses):
-    st.markdown("## Hypotheses")
+    if not hypotheses:
+        st.info("No hypotheses generated yet.")
+        return
+    st.subheader("Hypotheses")
     for hyp in hypotheses:
-        st.markdown(f"**{hyp.get('id','')} - {hyp.get('statement','')}**")
-        st.markdown(f"Feasibility: {hyp.get('feasibility_score','')}")
-        st.caption(f"Risks: {hyp.get('primary_risk','None')}")
-        linked = hyp.get("linked_insights") or []
-        st.caption(f"Linked insights: {', '.join(map(str, linked)) if linked else 'None'}")
-        actions = hyp.get("first_3_action_steps") or []
-        st.markdown(f"Next Steps: {', '.join(actions)}")
+        statement = hyp.get("statement", "No statement")
+        feasibility = hyp.get("feasibility_score", "")
+        risks = hyp.get("primary_risk", "None listed")
+        linked = hyp.get("linked_insights", [])
+        actions = hyp.get("first_3_action_steps", [])
+        with st.expander(f"{statement}"):
+            st.caption(f"Feasibility: {feasibility}, Risks: {risks}")
+            if linked:
+                st.markdown(f"**Linked Insights:** {', '.join(linked)}")
+            if actions:
+                st.markdown("**Next Steps:**")
+                for step in actions:
+                    st.markdown(f"- {step}")
 
 # ---------------------------
-# Main App
+# Streamlit App
 # ---------------------------
-
 st.title("Zero-to-One Analysis")
-uploaded_file = st.file_uploader("Upload PDF", type="pdf")
-model_choice = st.selectbox("Select Model", ["Claude", "GPT-5"])
+
+uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
+model_choice = st.selectbox("Model", ["claude-opus-4-1", "gpt-5"])
 
 if uploaded_file:
-    # Initialize session state
     st.session_state.setdefault("outputs", {})
     st.session_state.setdefault("timings", {})
 
+    # Extract PDF text
+    start = time.time()
     text = extract_text_from_pdf(uploaded_file)
+    st.session_state["timings"]["pdf_extraction"] = time.time() - start
 
     # ---------------------------
     # Pass 1: Summary
-    with st.spinner("Generating Summary…"):
-        prompt1 = f"Summarize the document and highlight contrarian insights:\n{text}"
-        summary, t1 = call_model(prompt1, adapt_tokens("summary"), "Pass 1 — Summary", model_choice)
-        st.session_state["timings"]["pass1"] = t1
-        st.session_state["outputs"]["Summary"] = summary
-    render_summary(summary)
+    # ---------------------------
+    start = time.time()
+    summary_prompt = f"Summarize this document in detail and extract initial counter-intuitive insights:\n\n{text}"
+    summary_text = call_model(summary_prompt, model=model_choice)
+    summary_json = parse_json_fallback(summary_text)
+    st.session_state["outputs"]["summary"] = summary_json
+    st.session_state["timings"]["summary"] = time.time() - start
+
+    render_insights(summary_json.get("insights") if isinstance(summary_json, dict) else [])
 
     # ---------------------------
-    # Pass 2: Candidate Insights
-    with st.spinner("Generating Candidate Insights…"):
-        prompt2 = f"Extract 5-10 counter-intuitive insights from the summary:\n{summary}"
-        raw2, t2 = call_model(prompt2, adapt_tokens("insights"), "Pass 2 — Insights", model_choice)
-        st.session_state["timings"]["pass2"] = t2
-        candidate_insights = parse_json_fallback(raw2) or []
-        st.session_state["outputs"]["Insights"] = candidate_insights
-    render_insights(candidate_insights)
+    # Pass 2: Deepened insights
+    # ---------------------------
+    start = time.time()
+    insights_for_deepening = summary_json.get("insights", []) if isinstance(summary_json, dict) else []
+    deepening_prompt = f"Deepen and refine these insights for Zero-to-One hypotheses:\n{json.dumps(insights_for_deepening)}"
+    deep_text = call_model(deepening_prompt, model=model_choice)
+    deep_json = parse_json_fallback(deep_text)
+    st.session_state["outputs"]["deepened_insights"] = deep_json.get("insights") if isinstance(deep_json, dict) else []
+    st.session_state["timings"]["deepening"] = time.time() - start
+
+    render_insights(st.session_state["outputs"]["deepened_insights"], title="Deepened Insights")
 
     # ---------------------------
-    # Pass 2a: Per-Insight Deepening
-    MAX_DEEPEN_INSIGHTS = 8
-    deepened_insights = []
-    st.session_state["timings"]["deepening"] = []
-    deepen_placeholder = st.sidebar.empty()
+    # Pass 3: Hypotheses generation
+    # ---------------------------
+    start = time.time()
+    deepened_insights = st.session_state["outputs"]["deepened_insights"]
+    hyp_prompt = f"Generate Zero-to-One hypotheses from these insights:\n{json.dumps(deepened_insights)}"
+    hyp_text = call_model(hyp_prompt, model=model_choice)
+    hyp_json = parse_json_fallback(hyp_text)
+    st.session_state["outputs"]["hypotheses"] = hyp_json if isinstance(hyp_json, list) else [hyp_json]
+    st.session_state["timings"]["hypotheses"] = time.time() - start
 
-    for idx, insight in enumerate(candidate_insights[:MAX_DEEPEN_INSIGHTS], start=1):
-        prompt = f"""
-Deepen this insight for strategic business analysis:
-{insight.get('statement','')}
-
-Output JSON with keys:
-- expanded_rationale
-- example_use_cases
-- potential_market
-- risks
-"""
-        with st.spinner(f"Deepening Insight {idx} of {len(candidate_insights[:MAX_DEEPEN_INSIGHTS])}…"):
-            start_time = time.time()
-            text_deep, _ = call_model(prompt, adapt_tokens("per_insight"), f"Deepening Insight {idx}", model_choice)
-            elapsed = time.time() - start_time
-            st.session_state["timings"]["deepening"].append(elapsed)
-
-        # Update sidebar progress
-        total_elapsed_deep = sum(st.session_state["timings"]["deepening"])
-        deepen_placeholder.markdown(
-            f"**Deepening Insights:** {idx}/{len(candidate_insights[:MAX_DEEPEN_INSIGHTS])} "
-            f"⏱ Total elapsed: {total_elapsed_deep:.1f}s"
-        )
-
-        # Safe JSON update
-        insight_update = parse_json_fallback(text_deep)
-        if isinstance(insight_update, dict):
-            insight.update(insight_update)
-        else:
-            st.warning(f"Insight {idx} deepening returned non-dict type ({type(insight_update)}). Storing raw output instead.")
-            insight["expanded_rationale"] = text_deep
-
-        deepened_insights.append(insight)
-
-        # Raw output expander
-        with st.expander(f"Insight {idx} Deepening (took {elapsed:.1f}s)"):
-            st.code(text_deep[:5000])
-            st.markdown(f"**Elapsed time:** {elapsed:.1f} seconds")
-
-    # Handle remaining insights
-    if len(candidate_insights) > MAX_DEEPEN_INSIGHTS:
-        deepened_insights += candidate_insights[MAX_DEEPEN_INSIGHTS:]
-        st.info(f"{len(candidate_insights) - MAX_DEEPEN_INSIGHTS} insights not deepened due to performance cap.")
-
-    st.session_state["outputs"]["Deepened Insights"] = deepened_insights
-    render_deepened_insights(deepened_insights)
+    render_hypotheses(st.session_state["outputs"]["hypotheses"])
 
     # ---------------------------
-    # Pass 3: Hypotheses
-    prompt3 = f"""
-From the deepened insights below, generate 3-6 high-leverage Zero-to-One hypotheses.
-Output JSON array with keys:
-- id
-- statement
-- feasibility_score (1-10)
-- primary_risk
-- linked_insights (array of ids)
-- first_3_action_steps
-
-Deepened Insights JSON:
-{json.dumps(deepened_insights, ensure_ascii=False)}
-"""
-    with st.spinner("Generating Hypotheses…"):
-        start_time = time.time()
-        raw3, _ = call_model(prompt3, adapt_tokens("hypotheses"), "Pass 3 — Hypotheses", model_choice)
-        elapsed3 = time.time() - start_time
-        st.session_state["timings"]["pass3"] = elapsed3
-
-    # Safe parsing
-    parsed3 = parse_json_fallback(raw3)
-    if isinstance(parsed3, list):
-        st.session_state["outputs"]["Hypotheses"] = parsed3
-    else:
-        st.warning("Hypotheses generation did not return a valid JSON array. Storing raw output instead.")
-        st.session_state["outputs"]["Hypotheses"] = [{"statement": raw3}]
-    render_hypotheses(st.session_state["outputs"]["Hypotheses"])
-
-    # Raw output expander
-    with st.expander(f"Raw Hypotheses Output (took {elapsed3:.1f}s)"):
-        st.code(raw3[:5000])
-        st.markdown(f"**Elapsed time:** {elapsed3:.1f} seconds")
-
+    # Download button
     # ---------------------------
-    # Step Counter Sidebar
-    with st.sidebar:
-        st.title("Pipeline Progress")
-        steps = [
-            ("Pass 1: Summary", "pass1", 1),
-            ("Pass 2: Candidate Insights", "pass2", 1),
-            ("Pass 2a: Deepened Insights", "deepening", len(candidate_insights[:MAX_DEEPEN_INSIGHTS])),
-            ("Pass 3: Hypotheses", "pass3", 1),
-        ]
-        total_elapsed = 0.0
-        for idx, (label, key, count) in enumerate(steps, start=1):
-            elapsed = st.session_state["timings"].get(key)
-            if elapsed is None:
-                st.markdown(f"**{idx}. {label}** — pending ⏳")
-            elif isinstance(elapsed, list):
-                step_time = sum(elapsed)
-                total_elapsed += step_time
-                st.markdown(f"**{idx}. {label}** — {len(elapsed)}/{count} items, {step_time:.1f}s")
-            else:
-                total_elapsed += elapsed
-                st.markdown(f"**{idx}. {label}** — {elapsed:.1f}s")
-        st.markdown("---")
-        st.markdown(f"**Total elapsed:** {total_elapsed:.1f}s")
-
-    # ---------------------------
-    # Download Results
     st.download_button(
         label="Download Results as JSON",
-        data=json.dumps(st.session_state["outputs"], ensure_ascii=False, indent=2),
+        data=json.dumps(st.session_state["outputs"], indent=2, ensure_ascii=False),
         file_name="zero_to_one_analysis.json",
         mime="application/json"
     )
+
+    # ---------------------------
+    # Show timings
+    # ---------------------------
+    st.subheader("Timings (seconds)")
+    for key, t in st.session_state["timings"].items():
+        st.markdown(f"- **{key}**: {t:.2f}s")
