@@ -1,41 +1,13 @@
 import os
-import json
 import time
+import json
 import streamlit as st
 import fitz  # PyMuPDF
-from typing import List
+import pandas as pd
 
-# ---------------------------
-# Model API helpers
-# ---------------------------
-import anthropic
-from openai import OpenAI
-
-def call_model(prompt: str, model: str = "claude-opus-4-1"):
-    """Call Claude Opus 4.1 or GPT-5 depending on model selection."""
-    if model.startswith("claude"):
-        client = anthropic.Anthropic(api_key=_get_secret("ANTHROPIC_API_KEY"))
-        resp = client.messages.create(
-            model=model,
-            max_tokens=3000,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return resp.content
-    elif model.startswith("gpt"):
-        client = OpenAI(api_key=_get_secret("OPENAI_API_KEY"))
-        resp = client.responses.create(
-            model=model,
-            input=prompt,
-            reasoning={"effort": "medium"},
-            text={"verbosity": "medium"},
-        )
-        return resp.output_text
-    else:
-        raise ValueError(f"Unknown model {model}")
-
-# ---------------------------
+# ----------------------------------------
 # Secrets helper
-# ---------------------------
+# ----------------------------------------
 def _get_secret(name: str):
     v = os.environ.get(name)
     if not v:
@@ -45,154 +17,193 @@ def _get_secret(name: str):
             v = None
     return v
 
-# ---------------------------
-# PDF extraction
-# ---------------------------
-def extract_text_from_pdf(uploaded_file) -> str:
+# ----------------------------------------
+# LLM clients
+# ----------------------------------------
+# Claude
+import anthropic
+claude_client = anthropic.Anthropic(api_key=_get_secret("ANTHROPIC_API_KEY"))
+
+# GPT-5
+from openai import OpenAI
+gpt5_client = OpenAI(api_key=_get_secret("OPENAI_API_KEY"))
+
+# ----------------------------------------
+# Utils
+# ----------------------------------------
+def extract_text_from_pdf(file_path):
     text = ""
-    with fitz.open(stream=uploaded_file.read(), filetype="pdf") as doc:
+    with fitz.open(file_path) as doc:
         for page in doc:
             text += page.get_text()
     return text
 
-# ---------------------------
-# Normalization & JSON helpers
-# ---------------------------
-def normalize_item(item):
-    if hasattr(item, "text"):  # TextBlock
-        return {"statement": item.text}
-    if isinstance(item, dict):
-        return item
-    if isinstance(item, str):
-        return {"statement": item}
-    return {"statement": str(item)}
-
-def normalize_list(lst: List):
-    return [normalize_item(x) for x in lst]
-
 def parse_json_fallback(text):
-    if isinstance(text, list):
-        return normalize_list(text)
-    if isinstance(text, dict):
-        return text
-    if isinstance(text, str):
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return {"raw_text": text}
-    return {"raw_text": str(text)}
+    try:
+        # If text is already a list or dict, return as is
+        if isinstance(text, (list, dict)):
+            return text
+        return json.loads(text)
+    except Exception:
+        return {"raw_text": str(text)}
 
-# ---------------------------
-# Rendering functions
-# ---------------------------
-def render_insights(insights, title="Insights"):
-    if not insights:
-        st.info("No insights available yet.")
-        return
-    st.subheader(title)
-    for insight in normalize_list(insights):
-        statement = insight.get("statement", "No statement")
-        impact = insight.get("contrarian_impact", "")
-        plaus = insight.get("plausibility", "")
-        actions = insight.get("action_steps", [])
-        with st.expander(statement):
-            st.caption(f"Contrarian Impact: {impact}, Plausibility: {plaus}")
-            if actions:
-                st.markdown("**Action Steps:**")
-                for step in actions:
-                    st.markdown(f"- {step}")
+def call_model(prompt, model="claude-opus-4-1", max_tokens=2000):
+    if "claude" in model.lower():
+        response = claude_client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content
+    elif "gpt" in model.lower():
+        result = gpt5_client.responses.create(
+            model=model,
+            input=prompt,
+            reasoning={"effort": "low"},
+            text={"verbosity": "low"},
+        )
+        return result.output_text
+    else:
+        raise ValueError("Unknown model")
 
-def render_hypotheses(hypotheses):
-    if not hypotheses:
-        st.info("No hypotheses generated yet.")
-        return
-    st.subheader("Hypotheses")
-    for hyp in normalize_list(hypotheses):
-        statement = hyp.get("statement", "No statement")
-        feasibility = hyp.get("feasibility_score", "")
-        risks = hyp.get("primary_risk", "None listed")
-        linked = hyp.get("linked_insights", [])
-        actions = hyp.get("first_3_action_steps", [])
-        with st.expander(statement):
-            st.caption(f"Feasibility: {feasibility}, Risks: {risks}")
-            if linked:
-                st.markdown(f"**Linked Insights:** {', '.join(str(x) for x in linked)}")
-            if actions:
-                st.markdown("**Next Steps:**")
-                for step in actions:
-                    st.markdown(f"- {step}")
+# ----------------------------------------
+# Deepen Insights
+# ----------------------------------------
+MAX_DEEPEN_INSIGHTS = 5  # Limit for performance
 
-# ---------------------------
-# Streamlit app
-# ---------------------------
+def deepen_insights(insights_list, model="claude-opus-4-1"):
+    deepened = []
+    for i, insight in enumerate(insights_list[:MAX_DEEPEN_INSIGHTS], start=1):
+        prompt = f"Deepen this insight with actionable, contrarian, zero-to-one thinking:\n\n{insight.get('text', insight.get('raw_text',''))}"
+        start_time = time.time()
+        deep_text = call_model(prompt, model=model)
+        deep_json = parse_json_fallback(deep_text)
+        elapsed = time.time() - start_time
+        insight_deepened = {
+            "original": insight,
+            "deepened": deep_json,
+            "elapsed_sec": elapsed
+        }
+        deepened.append(insight_deepened)
+    return deepened
+
+# ----------------------------------------
+# Render functions
+# ----------------------------------------
+def render_summary(summary_json):
+    with st.expander("Document Summary"):
+        if isinstance(summary_json, list):
+            for item in summary_json:
+                st.text(item.get("raw_text", ""))
+        elif isinstance(summary_json, dict):
+            st.text(summary_json.get("raw_text", ""))
+        else:
+            st.text(str(summary_json))
+
+def render_insights(insights_json):
+    with st.expander("Counter-Intuitive Insights"):
+        for i, insight in enumerate(insights_json, start=1):
+            text = insight.get("raw_text") if isinstance(insight, dict) else str(insight)
+            st.markdown(f"**Insight {i}:**")
+            st.text(text)
+
+def render_deepened_insights(deepened_list):
+    st.subheader("Deepened Insights")
+    for i, insight in enumerate(deepened_list, start=1):
+        with st.expander(f"Insight {i} (took {insight['elapsed_sec']:.1f}s)"):
+            st.markdown("**Original:**")
+            st.text(insight["original"].get("raw_text", ""))
+            st.markdown("**Deepened:**")
+            st.text(insight["deepened"].get("raw_text", ""))
+
+def render_hypotheses(hypotheses_json):
+    st.subheader("Zero-to-One Hypotheses")
+    for hyp in hypotheses_json:
+        statement = hyp.get("statement", "No statement") if isinstance(hyp, dict) else str(hyp)
+        feasibility = hyp.get("feasibility_score", "") if isinstance(hyp, dict) else ""
+        risks = hyp.get("primary_risk", "None listed") if isinstance(hyp, dict) else ""
+        linked = hyp.get("linked_insights", []) if isinstance(hyp, dict) else []
+        st.markdown(f"**Statement:** {statement}")
+        st.markdown(f"**Feasibility:** {feasibility}")
+        st.markdown(f"**Risks:** {risks}")
+        st.markdown(f"**Linked insights:** {', '.join(linked) if linked else 'None'}")
+        st.markdown("---")
+
+# ----------------------------------------
+# Streamlit App
+# ----------------------------------------
 st.title("Zero-to-One Analysis")
 
-model_choice = st.selectbox("Select model", ["claude-opus-4-1", "gpt-5"])
-uploaded_file = st.file_uploader("Upload PDF", type="pdf")
+uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
+model_choice = st.selectbox("Select Model", ["Claude Opus 4.1", "GPT-5"])
 
 if uploaded_file:
+    # Determine model string
+    model = "claude-opus-4-1" if model_choice.startswith("Claude") else "gpt-5"
+
+    # Initialize session state
     st.session_state.setdefault("outputs", {})
     st.session_state.setdefault("timings", {})
 
-    # PDF extraction
-    with st.spinner("Extracting text from PDF..."):
-        start = time.time()
-        pdf_text = extract_text_from_pdf(uploaded_file)
-        st.session_state["timings"]["pdf_extract"] = time.time() - start
+    # ---------------------------
+    # Step 1: Extract text
+    # ---------------------------
+    start = time.time()
+    text = extract_text_from_pdf(uploaded_file)
+    st.session_state["timings"]["extract"] = time.time() - start
 
     # ---------------------------
-    # Pass 1: Summary
+    # Step 2: Summary
     # ---------------------------
-    with st.spinner("Generating summary..."):
-        start = time.time()
-        summary_prompt = f"Summarize this document in detail and extract key points:\n{pdf_text}"
-        summary_text = call_model(summary_prompt, model=model_choice)
-        summary_json = parse_json_fallback(summary_text)
-        st.session_state["outputs"]["summary"] = summary_json
-        st.session_state["timings"]["summary"] = time.time() - start
+    start = time.time()
+    summary_prompt = f"Summarize this document in detail and extract insights:\n\n{text}"
+    summary_text = call_model(summary_prompt, model=model)
+    summary_json = parse_json_fallback(summary_text)
+    st.session_state["outputs"]["summary"] = summary_json
+    st.session_state["timings"]["summary"] = time.time() - start
 
-    with st.expander("Document Summary"):
-        st.text(summary_json.get("raw_text") or json.dumps(summary_json, indent=2, ensure_ascii=False))
+    render_summary(summary_json)
 
     # ---------------------------
-    # Pass 2: Counter-intuitive insights
+    # Step 3: Counter-intuitive Insights
     # ---------------------------
-    with st.spinner("Generating counter-intuitive insights..."):
-        start = time.time()
-        insights_prompt = f"Generate counter-intuitive insights from this summary:\n{summary_json.get('raw_text', '')}"
-        insights_text = call_model(insights_prompt, model=model_choice)
-        insights_json = parse_json_fallback(insights_text)
-        st.session_state["outputs"]["insights"] = insights_json
-        st.session_state["timings"]["insights"] = time.time() - start
+    start = time.time()
+    insights_prompt = f"Extract counter-intuitive insights in JSON array form from the document summary:\n\n{summary_text}"
+    insights_text = call_model(insights_prompt, model=model)
+    insights_json = parse_json_fallback(insights_text)
+    st.session_state["outputs"]["insights"] = insights_json
+    st.session_state["timings"]["insights"] = time.time() - start
 
-    render_insights(insights_json, title="Counter-Intuitive Insights")
+    render_insights(insights_json)
 
     # ---------------------------
-    # Pass 3: Zero-to-One hypotheses
+    # Step 4: Deepen Insights
     # ---------------------------
-    with st.spinner("Generating Zero-to-One hypotheses..."):
-        start = time.time()
-        hypotheses_prompt = f"Generate Zero-to-One hypotheses based on these insights:\n{json.dumps(insights_json)}"
-        hyp_text = call_model(hypotheses_prompt, model=model_choice)
-        hyp_json = parse_json_fallback(hyp_text)
-        st.session_state["outputs"]["hypotheses"] = hyp_json
-        st.session_state["timings"]["hypotheses"] = time.time() - start
+    start = time.time()
+    deepened_insights = deepen_insights(insights_json, model=model)
+    st.session_state["outputs"]["deepened_insights"] = deepened_insights
+    st.session_state["timings"]["deepen"] = time.time() - start
+
+    render_deepened_insights(deepened_insights)
+
+    # ---------------------------
+    # Step 5: Hypotheses
+    # ---------------------------
+    start = time.time()
+    hyp_prompt = f"Generate Zero-to-One hypotheses based on these deepened insights:\n\n{json.dumps(deepened_insights, indent=2)}"
+    hyp_text = call_model(hyp_prompt, model=model)
+    hyp_json = parse_json_fallback(hyp_text)
+    st.session_state["outputs"]["hypotheses"] = hyp_json
+    st.session_state["timings"]["hypotheses"] = time.time() - start
 
     render_hypotheses(hyp_json)
 
     # ---------------------------
-    # Download results
+    # Step 6: Download
     # ---------------------------
-    final_json = json.dumps(st.session_state["outputs"], indent=2, ensure_ascii=False)
     st.download_button(
-        label="Download Results as JSON",
-        data=final_json,
+        label="Download Full JSON Results",
+        data=json.dumps(st.session_state["outputs"], indent=2, ensure_ascii=False),
         file_name="zero_to_one_analysis.json",
         mime="application/json"
     )
-
-    # ---------------------------
-    # Show timings
-    # ---------------------------
-    st.subheader("Processing Timings (seconds)")
-    st.json(st.session_state["timings"])
