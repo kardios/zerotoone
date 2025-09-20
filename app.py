@@ -21,10 +21,13 @@ def _get_secret(name: str):
             v = None
     return v
 
-def extract_text_from_pdf(file_path):
-    """Extract text from a PDF using PyMuPDF"""
+def extract_text_from_pdf(uploaded_file):
+    """Extract text from a PDF UploadedFile in Streamlit"""
     text = ""
-    with fitz.open(file_path) as doc:
+    # Ensure we read from the start
+    uploaded_file.seek(0)
+    pdf_bytes = uploaded_file.read()
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
         for page in doc:
             text += page.get_text()
     return text
