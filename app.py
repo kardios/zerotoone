@@ -30,19 +30,27 @@ def extract_text_from_pdf(uploaded_file):
     pdf_bytes = uploaded_file.read()
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
         for page in doc:
-            # page.get_text("blocks") returns list of tuples, block[4] is text
             blocks = page.get_text("blocks")
             text += "\n".join(str(block[4]) for block in blocks) + "\n"
     return text
 
 # ---------------------------
-# JSON parsing helper
+# JSON parsing helper (robust)
 # ---------------------------
-def parse_json_fallback(text):
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return {"raw_text": text}
+def parse_json_fallback(obj):
+    """
+    Safely parse LLM output into JSON.
+    Handles str, list, dict.
+    """
+    if isinstance(obj, (dict, list)):
+        return obj
+    if isinstance(obj, str):
+        try:
+            return json.loads(obj)
+        except json.JSONDecodeError:
+            return {"raw_text": obj}
+    # Fallback for other unexpected types
+    return {"raw_text": str(obj)}
 
 # ---------------------------
 # LLM call abstraction
@@ -100,7 +108,7 @@ def render_hypotheses(hypotheses):
         with st.expander(f"{statement}"):
             st.caption(f"Feasibility: {feasibility}, Risks: {risks}")
             if linked:
-                st.markdown(f"**Linked Insights:** {', '.join(linked)}")
+                st.markdown(f"**Linked Insights:** {', '.join(str(x) for x in linked)}")
             if actions:
                 st.markdown("**Next Steps:**")
                 for step in actions:
@@ -156,7 +164,10 @@ if uploaded_file:
     hyp_prompt = f"Generate Zero-to-One hypotheses from these insights:\n{json.dumps(deepened_insights)}"
     hyp_text = call_model(hyp_prompt, model=model_choice)
     hyp_json = parse_json_fallback(hyp_text)
-    st.session_state["outputs"]["hypotheses"] = hyp_json if isinstance(hyp_json, list) else [hyp_json]
+    # Ensure a list
+    if isinstance(hyp_json, dict):
+        hyp_json = [hyp_json]
+    st.session_state["outputs"]["hypotheses"] = hyp_json
     st.session_state["timings"]["hypotheses"] = time.time() - start
 
     render_hypotheses(st.session_state["outputs"]["hypotheses"])
