@@ -59,23 +59,16 @@ def parse_json_fallback(text: str):
         return json.loads(text_strip)
     except Exception:
         pass
-    # try to find first JSON block
-    start = text.find("{")
-    end = text.rfind("}")
-    if 0 <= start < end:
-        try:
-            candidate = text[start:end+1]
-            return json.loads(candidate)
-        except Exception:
-            pass
-    start = text.find("[")
-    end = text.rfind("]")
-    if 0 <= start < end:
-        try:
-            candidate = text[start:end+1]
-            return json.loads(candidate)
-        except Exception:
-            pass
+    # Try to find JSON blocks
+    for start, end in [("{", "}"), ("[", "]")]:
+        s = text.find(start)
+        e = text.rfind(end)
+        if 0 <= s < e:
+            try:
+                candidate = text[s:e+1]
+                return json.loads(candidate)
+            except Exception:
+                pass
     return None
 
 def run_claude(prompt: str, max_tokens: int, step_name: str):
@@ -162,7 +155,7 @@ def render_insights(data):
                 fig, ax = plt.subplots(figsize=(6, 4))
                 ax.scatter(df["plausibility"], df["contrarian_impact"])
                 for _, row in df.iterrows():
-                    label = (row.get("id") or "") or str(row.name)
+                    label = str(row.get("id") or row.name)
                     ax.text(row["plausibility"], row["contrarian_impact"], label, fontsize=8)
                 ax.set_xlabel("Plausibility")
                 ax.set_ylabel("Contrarian Impact")
@@ -181,23 +174,43 @@ def render_hypotheses(data):
     if not data:
         st.warning("No hypotheses available.")
         return
+
     if isinstance(data, list):
         for hyp in data:
-            st.markdown(f"### {hyp.get('id','?')}: {hyp.get('statement','(no statement)')}")
-            feas = float(hyp.get("feasibility_score", 0) or 0)
-            st.caption(f"Feasibility: {feas}/10")
+            hyp_id = str(hyp.get("id", "?"))
+            statement = str(hyp.get("statement", "(no statement)"))
+            st.markdown(f"### {hyp_id}: {statement}")
+
+            feasibility = hyp.get("feasibility_score")
+            try:
+                feasibility = float(feasibility)
+            except (ValueError, TypeError):
+                feasibility = 0
+            st.caption(f"Feasibility: {feasibility}/10")
+
             risks = hyp.get("primary_risk") or ""
             st.caption(f"Risks: {risks or 'None listed'}")
+
             linked = hyp.get("linked_insights") or []
-            st.caption(f"Linked insights: {', '.join(linked) if linked else 'None'}")
+            linked_str = ", ".join(map(str, linked)) if linked else "None"
+            st.caption(f"Linked insights: {linked_str}")
+
+            actions = hyp.get("first_3_action_steps") or []
+            actions_str = "\n".join([f"- {str(a)}" for a in actions])
+            if actions_str:
+                st.markdown(f"**First Action Steps:**\n{actions_str}")
+
+        # Overview table
         try:
             df = pd.DataFrame(data)
             cols = [c for c in ["id", "statement", "feasibility_score", "market_potential"] if c in df.columns]
             if cols:
-                st.markdown("### Overview")
-                st.dataframe(df[cols])
-        except Exception:
-            pass
+                st.markdown("### Overview Table")
+                st.dataframe(df[cols].astype(str))
+        except Exception as e:
+            st.error(f"Could not render overview table: {e}")
+            with st.expander("Raw JSON"):
+                st.json(data)
     else:
         with st.expander("Raw Output"):
             st.markdown(str(data)[:10000])
@@ -277,11 +290,8 @@ Summary JSON:
     raw2, t2 = run_claude(prompt2, tok, "Pass 2 — Candidate Insights")
     st.session_state["timings"]["pass2"] = t2
     parsed2 = parse_json_fallback(raw2)
-    if parsed2 and isinstance(parsed2, list):
-        st.session_state["outputs"]["Candidate Insights"] = parsed2
-    else:
-        st.session_state["outputs"]["Candidate Insights"] = []
-    render_insights(st.session_state["outputs"].get("Candidate Insights") or raw2)
+    st.session_state["outputs"]["Candidate Insights"] = parsed2 if isinstance(parsed2, list) else []
+    render_insights(st.session_state["outputs"]["Candidate Insights"])
 
     # Pass 3: Hypotheses & Refinement
     accepted_insights = st.session_state["outputs"].get("Candidate Insights", [])
@@ -303,11 +313,8 @@ Candidate insights:
     raw3, t3 = run_claude(prompt3, tok, "Pass 3 — Hypotheses & Refinement")
     st.session_state["timings"]["pass3"] = t3
     parsed3 = parse_json_fallback(raw3)
-    if parsed3 and isinstance(parsed3, list):
-        st.session_state["outputs"]["Hypotheses"] = parsed3
-    else:
-        st.session_state["outputs"]["Hypotheses"] = []
-    render_hypotheses(st.session_state["outputs"].get("Hypotheses") or raw3)
+    st.session_state["outputs"]["Hypotheses"] = parsed3 if isinstance(parsed3, list) else []
+    render_hypotheses(st.session_state["outputs"]["Hypotheses"])
 
     # Final download
     final_text = json.dumps(st.session_state["outputs"], indent=2, ensure_ascii=False)
